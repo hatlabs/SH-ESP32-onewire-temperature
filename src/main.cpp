@@ -1,14 +1,11 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include <Arduino.h>
 #include <N2kMessages.h>
 #include <NMEA2000_esp32.h>
-#include <Wire.h>
 
-#include "sensesp_app.h"
+#include "sensesp/signalk/signalk_output.h"
 #include "sensesp_app_builder.h"
-#include "sensors/onewire_temperature.h"
-#include "signalk/signalk_output.h"
+#include "sensesp_onewire/onewire_temperature.h"
 
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
@@ -28,6 +25,8 @@
 // define temperature display units
 #define TEMP_DISPLAY_FUNC KelvinToCelsius
 //#define TEMP_DISPLAY_FUNC KelvinToFahrenheit
+
+using namespace sensesp;
 
 TwoWire* i2c;
 Adafruit_SSD1306* display;
@@ -77,17 +76,16 @@ void SendEngineTemperatures() {
   nmea2000->SendMsg(N2kMsg);
 }
 
-ReactESP app([]() {
-// Some initialization boilerplate when in debug mode...
+ReactESP app;
+
+void setup() {
 #ifndef SERIAL_DEBUG_DISABLED
   SetupSerialDebug(115200);
 #endif
 
   SensESPAppBuilder builder;
 
-  sensesp_app = builder.set_hostname("temperatures")
-                    ->set_standard_sensors(NONE)
-                    ->get_app();
+  sensesp_app = builder.set_hostname("temperatures")->get_app();
 
   DallasTemperatureSensors* dts = new DallasTemperatureSensors(ONEWIRE_PIN);
 
@@ -137,15 +135,15 @@ ReactESP app([]() {
   main_engine_oil_temperature->connect_to(new SKOutput<float>(
       "propulsion.main.oilTemperature", "/mainEngineOilTemp/skPath",
       main_engine_oil_temperature_metadata));
-  main_engine_coolant_temperature->connectTo(new SKOutput<float>(
+  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
       "propulsion.main.coolantTemperature", "/mainEngineCoolantTemp/skPath",
       main_engine_coolant_temperature_metadata));
   // transmit coolant temperature as overall engine temperature as well
-  main_engine_coolant_temperature->connectTo(new SKOutput<float>(
+  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
       "propulsion.main.temperature", "/mainEngineTemp/skPath",
       main_engine_temperature_metadata));
   // propulsion.*.wetExhaustTemperature is a non-standard path
-  main_engine_exhaust_temperature->connectTo(
+  main_engine_exhaust_temperature->connect_to(
       new SKOutput<float>("propulsion.main.wetExhaustTemperature",
                           "/mainEngineWetExhaustTemp/skPath",
                           main_engine_exhaust_temperature_metadata));
@@ -240,5 +238,8 @@ ReactESP app([]() {
         nmea2000->SendMsg(N2kMsg);
       }));
 
-  sensesp_app->enable();
-});
+  sensesp_app->start();
+}
+
+// main program loop
+void loop() { app.tick(); }
