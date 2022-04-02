@@ -1,11 +1,31 @@
 #include <Adafruit_GFX.h>
+#include <Adafruit_ADS1X15.h>
 #include <Adafruit_SSD1306.h>
-#include <N2kMessages.h>
-#include <NMEA2000_esp32.h>
-
+#include "eh_analog.h"
+#include "rpm.h"
+#include "eh_display.h"
+#include "sensesp/sensors/analog_input.h"
+#include "sensesp/sensors/digital_input.h"
+#include "sensesp/sensors/sensor.h"
+#include "sensesp/system/lambda_consumer.h"
 #include "sensesp/signalk/signalk_output.h"
 #include "sensesp_app_builder.h"
 #include "sensesp_onewire/onewire_temperature.h"
+
+using namespace sensesp;
+
+// I2C pins on SH-ESP32
+const int kSDAPin = 16;
+const int kSCLPin = 17;
+
+// ADS1115 I2C address
+const int kADS1115Address = 0x4b;
+
+// Engine hat digital input pins
+const int kDigitalInputPin1 = GPIO_NUM_15;
+const int kDigitalInputPin2 = GPIO_NUM_13;
+const int kDigitalInputPin3 = GPIO_NUM_14;
+const int kDigitalInputPin4 = GPIO_NUM_12;
 
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
@@ -14,24 +34,24 @@
 #define SDA_PIN 16
 #define SCL_PIN 17
 
-// CAN bus (NMEA 2000) pins on SH-ESP32
-#define CAN_RX_PIN GPIO_NUM_34
-#define CAN_TX_PIN GPIO_NUM_32
-
 // OLED display width and height, in pixels
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
 // define temperature display units
-#define TEMP_DISPLAY_FUNC KelvinToCelsius
-//#define TEMP_DISPLAY_FUNC KelvinToFahrenheit
+//#define TEMP_DISPLAY_FUNC KelvinToCelsius
+#define TEMP_DISPLAY_FUNC KelvinToFahrenheit
 
-using namespace sensesp;
+// Test output pin configuration
+#define ENABLE_TEST_OUTPUT_PIN
+#ifdef ENABLE_TEST_OUTPUT_PIN
+const int kTestOutputPin = GPIO_NUM_18;
+// repetition interval in ms; corresponds to 1000/(2*5)=100 Hz
+const int kTestOutputInterval = 5;
+#endif
 
 TwoWire* i2c;
 Adafruit_SSD1306* display;
-
-tNMEA2000* nmea2000;
 
 /// Clear a text row on an Adafruit graphics display
 void ClearRow(int row) { display->fillRect(0, 8 * row, SCREEN_WIDTH, 8, 0); }
@@ -47,35 +67,6 @@ void PrintTemperature(int row, String title, float temperature) {
   display->display();
 }
 
-double oil_temperature = N2kDoubleNA;
-double coolant_temperature = N2kDoubleNA;
-
-/**
- * @brief Send Engine Dynamic Parameter data
- *
- * Send engine temperature data using the Engine Dynamic Parameter PGN.
- * All unused fields that are sent with undefined value except the status
- * bit fields are sent as zero. Hopefully we're not resetting anybody's engine
- * warnings...
- */
-void SendEngineTemperatures() {
-  tN2kMsg N2kMsg;
-  SetN2kEngineDynamicParam(N2kMsg,
-                           0,  // instance of a single engine is always 0
-                           N2kDoubleNA,  // oil pressure
-                           oil_temperature, coolant_temperature,
-                           N2kDoubleNA,  // alternator voltage
-                           N2kDoubleNA,  // fuel rate
-                           N2kDoubleNA,  // engine hours
-                           N2kDoubleNA,  // engine coolant pressure
-                           N2kDoubleNA,  // engine fuel pressure
-                           N2kInt8NA,    // engine load
-                           N2kInt8NA,    // engine torque
-                           (tN2kEngineDiscreteStatus1)0,
-                           (tN2kEngineDiscreteStatus2)0);
-  nmea2000->SendMsg(N2kMsg);
-}
-
 ReactESP app;
 
 void setup() {
@@ -85,9 +76,16 @@ void setup() {
 
   SensESPAppBuilder builder;
 
-  sensesp_app = builder.set_hostname("temperatures")->get_app();
+  sensesp_app = builder.set_hostname("SH-ESP32-Engine")
+                       ->enable_uptime_sensor()
+                       ->enable_system_info_sensors()
+                       ->get_app();
 
   DallasTemperatureSensors* dts = new DallasTemperatureSensors(ONEWIRE_PIN);
+
+  // Connect the tacho senders
+  
+  auto tacho_1_frequency = ConnectTachoSender(kDigitalInputPin1, "1");
 
   // define three 1-Wire temperature sensors that update every 1000 ms
   // and have specific web UI configuration paths
@@ -130,6 +128,14 @@ void setup() {
                      10.                         // timeout, in seconds
       );
 
+  auto tacho_1_frequency_metadata =
+      new SKMetadata("K",                       // units
+                     "Engine RPM",  // display name
+                     "Engine RPM",  // description
+                     "RPM",         // short name
+                     10.                        // timeout, in seconds
+      );   
+
   // connect the sensors to Signal K output paths
 
   main_engine_oil_temperature->connect_to(new SKOutput<float>(
@@ -165,78 +171,16 @@ void setup() {
   display->display();
 
   // Add display updaters for temperature values
+  app.onRepeat(1000, []() {
+      PrintValue(display, 1, "IP:", WiFi.localIP().toString()); });
   main_engine_oil_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(1, "Oil", temperature); }));
+      [](float temperature) { PrintTemperature(2, "Oil", temperature); }));
   main_engine_coolant_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(2, "Coolant", temperature); }));
+      [](float temperature) { PrintTemperature(3, "Coolant", temperature); }));
   main_engine_exhaust_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(3, "Exhaust", temperature); }));
-
-  // initialize the NMEA 2000 subsystem
-
-  // instantiate the NMEA2000 object
-  nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
-
-  // Reserve enough buffer for sending all messages. This does not work on small
-  // memory devices like Uno or Mega
-  nmea2000->SetN2kCANSendFrameBufSize(250);
-  nmea2000->SetN2kCANReceiveFrameBufSize(250);
-
-  // Set Product information
-  nmea2000->SetProductInformation(
-      "20210405",  // Manufacturer's Model serial code (max 32 chars)
-      103,         // Manufacturer's product code
-      "SH-ESP32 Temp Sensor",  // Manufacturer's Model ID (max 33 chars)
-      "0.1.0.0 (2021-04-05)",  // Manufacturer's Software version code (max 40
-                               // chars)
-      "0.0.3.1 (2021-03-07)"   // Manufacturer's Model version (max 24 chars)
-  );
-  // Set device information
-  nmea2000->SetDeviceInformation(
-      1,    // Unique number. Use e.g. Serial number.
-      130,  // Device function=Analog to NMEA 2000 Gateway. See codes on
-            // http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
-      75,   // Device class=Inter/Intranetwork Device. See codes on
-           // http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20&%20function%20codes%20v%202.00.pdf
-      2046  // Just choosen free from code list on
-            // http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
-  );
-
-  nmea2000->SetMode(tNMEA2000::N2km_NodeOnly, 22);
-  // Disable all msg forwarding to USB (=Serial)
-  nmea2000->EnableForward(false);
-  nmea2000->Open();
-
-  // No need to parse the messages at every single loop iteration; 1 ms will do
-  app.onRepeat(1, []() { nmea2000->ParseMessages(); });
-
-  // Implement the N2K PGN sending. Engine (oil) temperature and coolant
-  // temperature are a bit more complex because they're sent together
-  // as part of a Engine Dynamic Parameter PGN.
-
-  main_engine_oil_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        oil_temperature = temperature;
-        SendEngineTemperatures();
-      }));
-  main_engine_coolant_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        coolant_temperature = temperature;
-        SendEngineTemperatures();
-      }));
-  // hijack the exhaust gas temperature for wet exhaust temperature
-  // measurement
-  main_engine_exhaust_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        tN2kMsg N2kMsg;
-        SetN2kTemperature(N2kMsg,
-                          1,                            // SID
-                          2,                            // TempInstance
-                          N2kts_ExhaustGasTemperature,  // TempSource
-                          temperature                   // actual temperature
-        );
-        nmea2000->SendMsg(N2kMsg);
-      }));
+      [](float temperature) { PrintTemperature(4, "Exhaust", temperature); }));
+  tacho_1_frequency->connect_to(new LambdaConsumer<float>(
+        [](float value) { PrintValue(display, 5, "RPM", 60 * value); }));
 
   sensesp_app->start();
 }
