@@ -79,6 +79,8 @@ void setup() {
   sensesp_app = builder.set_hostname("SH-ESP32-Engine")
                        ->enable_uptime_sensor()
                        ->enable_system_info_sensors()
+                       ->set_wifi("voyager", "123voy321")
+                       ->set_sk_server("sea2master.voy", 3000)
                        ->get_app();
 
   DallasTemperatureSensors* dts = new DallasTemperatureSensors(ONEWIRE_PIN);
