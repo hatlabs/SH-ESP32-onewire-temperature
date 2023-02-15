@@ -1,4 +1,5 @@
-# SH-ESP32 1-Wire temperature sensor example
+# SignalK engine monitor using an ESP32 board
 
-This repo implements an example engine temperature sensor for the SH-ESP32 development board using Signal K and the SensESP library.
-The temperatures are measured using 1-Wire DS18B20 sensors.
+Forked combination of https://github.com/hatlabs/SH-ESP32-onewire-temperature & https://github.com/hatlabs/SH-ESP32-engine-hat-firmware
+
+Utilizes https://hatlabs.fi/product-category/sh-esp32/sh-esp32-devices/?v=7516fd43adaa & https://hatlabs.fi/product/sh-esp32-engine-top-hat/?v=7516fd43adaa
