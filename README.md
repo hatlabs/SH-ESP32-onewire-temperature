@@ -1,4 +1,4 @@
-# SignalK engine monitor using an ESP32
+# SignalK engine monitor using an ESP32 board
 
 Forked combination of https://github.com/hatlabs/SH-ESP32-onewire-temperature & https://github.com/hatlabs/SH-ESP32-engine-hat-firmware
 
