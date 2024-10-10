@@ -1,9 +1,13 @@
+#include "sensesp.h"
+
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <N2kMessages.h>
 #include <NMEA2000_esp32.h>
+#include <memory>
 
 #include "sensesp/signalk/signalk_output.h"
+#include "sensesp/ui/config_item.h"
 #include "sensesp_app_builder.h"
 #include "sensesp_onewire/onewire_temperature.h"
 
@@ -24,9 +28,10 @@
 
 // define temperature display units
 #define TEMP_DISPLAY_FUNC KelvinToCelsius
-//#define TEMP_DISPLAY_FUNC KelvinToFahrenheit
+// #define TEMP_DISPLAY_FUNC KelvinToFahrenheit
 
 using namespace sensesp;
+using namespace sensesp::onewire;
 
 TwoWire* i2c;
 Adafruit_SSD1306* display;
@@ -76,12 +81,8 @@ void SendEngineTemperatures() {
   nmea2000->SendMsg(N2kMsg);
 }
 
-ReactESP app;
-
 void setup() {
-#ifndef SERIAL_DEBUG_DISABLED
-  SetupSerialDebug(115200);
-#endif
+  SetupLogging(ESP_LOG_DEBUG);
 
   SensESPAppBuilder builder;
 
@@ -92,12 +93,29 @@ void setup() {
   // define three 1-Wire temperature sensors that update every 1000 ms
   // and have specific web UI configuration paths
 
-  auto main_engine_oil_temperature =
-      new OneWireTemperature(dts, 1000, "/mainEngineOilTemp/oneWire");
-  auto main_engine_coolant_temperature =
-      new OneWireTemperature(dts, 1000, "/mainEngineCoolantTemp/oneWire");
-  auto main_engine_exhaust_temperature =
-      new OneWireTemperature(dts, 1000, "/mainEngineWetExhaustTemp/oneWire");
+  auto main_engine_oil_temperature = std::make_shared<OneWireTemperature>(
+      dts, 1000, "/mainEngineOilTemp/oneWire");
+
+  ConfigItem(main_engine_oil_temperature)
+      ->set_title("Oil Temperature")
+      ->set_description("Entine Oil Temperature")
+      ->set_sort_order(100);
+
+  auto main_engine_coolant_temperature = std::make_shared<OneWireTemperature>(
+      dts, 1000, "/mainEngineCoolantTemp/oneWire");
+
+  ConfigItem(main_engine_coolant_temperature)
+      ->set_title("Coolant Temperature")
+      ->set_description("Engine Coolant Temperature")
+      ->set_sort_order(200);
+
+  auto main_engine_exhaust_temperature = std::make_shared<OneWireTemperature>(
+      dts, 1000, "/mainEngineWetExhaustTemp/oneWire");
+
+  ConfigItem(main_engine_exhaust_temperature)
+      ->set_title("Exhaust Temperature")
+      ->set_description("Wet Exhaust Temperature")
+      ->set_sort_order(300);
 
   // define metadata for sensors
 
@@ -132,21 +150,26 @@ void setup() {
 
   // connect the sensors to Signal K output paths
 
-  main_engine_oil_temperature->connect_to(new SKOutput<float>(
+  auto sk_output_oil_temp = std::make_shared<SKOutput<float>>(
       "propulsion.main.oilTemperature", "/mainEngineOilTemp/skPath",
-      main_engine_oil_temperature_metadata));
-  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
+      main_engine_oil_temperature_metadata);
+  auto sk_output_coolant_temp = std::make_shared<SKOutput<float>>(
       "propulsion.main.coolantTemperature", "/mainEngineCoolantTemp/skPath",
-      main_engine_coolant_temperature_metadata));
-  // transmit coolant temperature as overall engine temperature as well
-  main_engine_coolant_temperature->connect_to(new SKOutput<float>(
+      main_engine_coolant_temperature_metadata);
+  auto sk_output_engine_temp = std::make_shared<SKOutput<float>>(
       "propulsion.main.temperature", "/mainEngineTemp/skPath",
-      main_engine_temperature_metadata));
+      main_engine_temperature_metadata);
+  auto sk_output_exhaust_temp = std::make_shared<SKOutput<float>>(
+      "propulsion.main.wetExhaustTemperature",
+      "/mainEngineWetExhaustTemp/skPath",
+      main_engine_exhaust_temperature_metadata);
+
+  main_engine_oil_temperature->connect_to(sk_output_oil_temp);
+  main_engine_coolant_temperature->connect_to(sk_output_coolant_temp);
+  // transmit coolant temperature as overall engine temperature as well
+  main_engine_coolant_temperature->connect_to(sk_output_engine_temp);
   // propulsion.*.wetExhaustTemperature is a non-standard path
-  main_engine_exhaust_temperature->connect_to(
-      new SKOutput<float>("propulsion.main.wetExhaustTemperature",
-                          "/mainEngineWetExhaustTemp/skPath",
-                          main_engine_exhaust_temperature_metadata));
+  main_engine_exhaust_temperature->connect_to(sk_output_exhaust_temp);
 
   // initialize the display
   i2c = new TwoWire(0);
@@ -165,12 +188,16 @@ void setup() {
   display->display();
 
   // Add display updaters for temperature values
-  main_engine_oil_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(1, "Oil", temperature); }));
-  main_engine_coolant_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(2, "Coolant", temperature); }));
-  main_engine_exhaust_temperature->connect_to(new LambdaConsumer<float>(
-      [](float temperature) { PrintTemperature(3, "Exhaust", temperature); }));
+  auto oil_temp_display_updater = new LambdaConsumer<float>(
+      [](float temperature) { PrintTemperature(1, "Oil", temperature); });
+  auto coolant_temp_display_updater = new LambdaConsumer<float>(
+      [](float temperature) { PrintTemperature(2, "Coolant", temperature); });
+  auto exhaust_temp_display_updater = new LambdaConsumer<float>(
+      [](float temperature) { PrintTemperature(3, "Exhaust", temperature); });
+
+  main_engine_oil_temperature->connect_to(oil_temp_display_updater);
+  main_engine_coolant_temperature->connect_to(coolant_temp_display_updater);
+  main_engine_exhaust_temperature->connect_to(exhaust_temp_display_updater);
 
   // initialize the NMEA 2000 subsystem
 
@@ -187,7 +214,7 @@ void setup() {
       "20210405",  // Manufacturer's Model serial code (max 32 chars)
       103,         // Manufacturer's product code
       "SH-ESP32 Temp Sensor",  // Manufacturer's Model ID (max 33 chars)
-      "0.1.0.0 (2021-04-05)",  // Manufacturer's Software version code (max 40
+      "0.2.0.0 (2024-10-10)",  // Manufacturer's Software version code (max 40
                                // chars)
       "0.0.3.1 (2021-03-07)"   // Manufacturer's Model version (max 24 chars)
   );
@@ -208,38 +235,43 @@ void setup() {
   nmea2000->Open();
 
   // No need to parse the messages at every single loop iteration; 1 ms will do
-  app.onRepeat(1, []() { nmea2000->ParseMessages(); });
+  event_loop()->onRepeat(1, []() { nmea2000->ParseMessages(); });
 
   // Implement the N2K PGN sending. Engine (oil) temperature and coolant
   // temperature are a bit more complex because they're sent together
   // as part of a Engine Dynamic Parameter PGN.
 
-  main_engine_oil_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        oil_temperature = temperature;
-        SendEngineTemperatures();
-      }));
-  main_engine_coolant_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        coolant_temperature = temperature;
-        SendEngineTemperatures();
-      }));
-  // hijack the exhaust gas temperature for wet exhaust temperature
-  // measurement
-  main_engine_exhaust_temperature->connect_to(
-      new LambdaConsumer<float>([](float temperature) {
-        tN2kMsg N2kMsg;
-        SetN2kTemperature(N2kMsg,
-                          1,                            // SID
-                          2,                            // TempInstance
-                          N2kts_ExhaustGasTemperature,  // TempSource
-                          temperature                   // actual temperature
-        );
-        nmea2000->SendMsg(N2kMsg);
-      }));
+  auto oil_temp_consumer = new LambdaConsumer<float>([](float temperature) {
+    oil_temperature = temperature;
+    SendEngineTemperatures();
+  });
 
-  sensesp_app->start();
+  auto coolant_temp_consumer = new LambdaConsumer<float>([](float temperature) {
+    coolant_temperature = temperature;
+    SendEngineTemperatures();
+  });
+
+  auto exhaust_temp_consumer = new LambdaConsumer<float>([](float temperature) {
+    tN2kMsg N2kMsg;
+    SetN2kTemperature(N2kMsg,
+                      1,                            // SID
+                      2,                            // TempInstance
+                      N2kts_ExhaustGasTemperature,  // TempSource
+                      temperature                   // actual temperature
+    );
+    nmea2000->SendMsg(N2kMsg);
+  });
+
+  main_engine_oil_temperature->connect_to(oil_temp_consumer);
+  main_engine_coolant_temperature->connect_to(coolant_temp_consumer);
+  main_engine_exhaust_temperature->connect_to(exhaust_temp_consumer);
+
+  // To avoid garbage collecting all shared pointers created in setup(),
+  // loop from here.
+  while (true) {
+    loop();
+  }
 }
 
 // main program loop
-void loop() { app.tick(); }
+void loop() { event_loop()->tick(); }
