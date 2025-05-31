@@ -7,6 +7,8 @@
 #include "sensesp_app_builder.h"
 #include "sensesp_onewire/onewire_temperature.h"
 
+using namespace sensesp::onewire;
+
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
 
@@ -76,11 +78,10 @@ void SendEngineTemperatures() {
   nmea2000->SendMsg(N2kMsg);
 }
 
-ReactESP app;
 
 void setup() {
 #ifndef SERIAL_DEBUG_DISABLED
-  SetupSerialDebug(115200);
+  SetupLogging();
 #endif
 
   SensESPAppBuilder builder;
@@ -208,7 +209,10 @@ void setup() {
   nmea2000->Open();
 
   // No need to parse the messages at every single loop iteration; 1 ms will do
-  app.onRepeat(1, []() { nmea2000->ParseMessages(); });
+  event_loop()->onRepeat(
+        1,
+        []() { nmea2000->ParseMessages(); }
+    );
 
   // Implement the N2K PGN sending. Engine (oil) temperature and coolant
   // temperature are a bit more complex because they're sent together
@@ -242,4 +246,4 @@ void setup() {
 }
 
 // main program loop
-void loop() { app.tick(); }
+void loop() { event_loop()->tick(); }
