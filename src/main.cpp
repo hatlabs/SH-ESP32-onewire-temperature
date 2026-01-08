@@ -11,8 +11,6 @@
 #include "sensesp_app_builder.h"
 #include "sensesp_onewire/onewire_temperature.h"
 
-using namespace sensesp::onewire;
-
 // 1-Wire data pin on SH-ESP32
 #define ONEWIRE_PIN 4
 
